@@ -1,2 +1,3 @@
-# cups-python
-Cifrazia Ultimate Permission System | Python
+# CUPS
+
+## Cifrazia Ultimate Permission System
