@@ -1,3 +1,4 @@
+from collections import namedtuple
 from typing import Iterable, List, Optional
 
 from py2neo import cypher_repr
@@ -11,7 +12,7 @@ __all__ = [
     'Perm',
     'Scope',
     'Ability',
-    'AbilityPerm',
+    'EnabledAbility',
 ]
 
 IS_IN = 'IS_IN'
@@ -29,37 +30,26 @@ WORKS_IN = 'ACTIVATED_IN'
 
 
 class _HasScope(Model):
-
     @property
     def scope(self) -> Optional['NodeType']:
-        cursor = graph.run(
-            f'MATCH (i:{self.label}) -[:{EXISTS_IN}]-> (j:{Scope.label}) '
-            f'WHERE id(i) = {self.id} RETURN j'
-        )
+        cursor = graph.run(f'MATCH (i:{self.label}) -[:{EXISTS_IN}]-> (j:{Scope.label}) WHERE id(i)={self.id} RETURN j')
         if record := get_one(cursor):
             return Scope.from_node(record['j'])
 
     @scope.deleter
     def scope(self) -> None:
         self['__scope_id__'] = None
-        self.save(update_fields=['__scope_id__'])
-        graph.run(
-            f'MATCH (i:{self.label}) -[r:{EXISTS_IN}]-> (:{Scope.label}) '
-            f'WHERE id(i) = {self.id} DELETE r'
-        )
+        graph.run(f'MATCH (i:{self.label}) -[r:{EXISTS_IN}]-> (:{Scope.label}) WHERE id(i)={self.id} '
+                  f'SET i.__scope_id__ = {cypher_repr(None)} DELETE r')
 
     @scope.setter
     def scope(self, item: 'NodeType') -> None:
-        graph.run(
-            f'MATCH (i:{self.label}) -[r:{EXISTS_IN}]-> (:{Scope.label}) '
-            f'WHERE id(i) = {self.id} DELETE r'
-        )
+        graph.run(f'MATCH (i:{self.label}) -[r:{EXISTS_IN}]-> (:{Scope.label}) WHERE id(i)={self.id} DELETE r')
         self['__scope_id__'] = item.id
-        self.save(update_fields=['__scope_id__'])
         graph.run(
             f'MATCH (i:{self.label}) WHERE id(i) = {self.id} '
             f'MATCH (j:{Scope.label}) WHERE id(j) = {item.id} '
-            f'MERGE (i) -[:{EXISTS_IN}]-> (j)'
+            f'MERGE (i) -[:{EXISTS_IN}]-> (j) SET i.__scope_id__ = {cypher_repr(item.id)}'
         )
 
     def is_scope_supported(self, scope: 'Scope' = None) -> None:
@@ -72,9 +62,7 @@ class _HasScope(Model):
             f'MATCH (a:{self.label}) WHERE id(a) = {self.id} '
             f'MATCH (a)-[:{EXISTS_IN}|{SUBSET_OF}*]->(:{Scope.label})<-[:{SUBSET_OF}]-(s:{Scope.label}) '
             f'WHERE id(s) = {scope.id} RETURN id(s) as i')
-        try:
-            next(cursor)
-        except StopIteration:
+        if not get_one(cursor):
             raise ValueError(f'{self.label} only works in scope {local}')
 
 
@@ -110,51 +98,50 @@ class Entity(Model):
         graph.run(f'MATCH (e:{self.label})-[r:{IS_IN}]->(g:{Group.label}) '
                   f'WHERE id(e) = {self.id} DELETE r')
 
-    def get_all_activated_abilities(self) -> Iterable['AbilityPerm']:
+    def get_all_activated_abilities(self) -> Iterable['EnabledAbility']:
         cursor = graph.run(f'MATCH (e:{self.label}) WHERE id(e) = {self.id} '
-                           f'MATCH (e)-[:{ENABLED}]->(ap:{AbilityPerm.label}) '
-                           f'RETURN ap')
+                           f'MATCH (e)-[r:{ENABLED}]->(a:{Ability.label}) '
+                           f'RETURN r, a')
         for record in cursor:
-            yield AbilityPerm.from_node(record['ap'])
+            ability = Ability.from_node(record['a'])
+            edge = record['r']
+            yield EnabledAbility(ability=ability, perm_id=edge['perm_id'], scope_id=edge['scope_id'])
 
     def get_activated_abilities(self, scope: 'Scope' = None) -> Iterable['Ability']:
-        f = {'scope_id': scope.id}
+        f = encode_dict({'scope_id': scope.id})
         cursor = graph.run(f'MATCH (e:{self.label}) WHERE id(e) = {self.id} '
-                           f'MATCH (e)-[:{ENABLED}]->(ap:{AbilityPerm.label} {encode_dict(f)}) '
-                           f'RETURN ap')
+                           f'MATCH (e)-[r:{ENABLED} {f}]->(a:{Ability.label}) '
+                           f'RETURN r, a')
         for record in cursor:
-            yield AbilityPerm.from_node(record['ap'])
+            ability = Ability.from_node(record['a'])
+            edge = record['r']
+            yield EnabledAbility(ability=ability, perm_id=edge['perm_id'], scope_id=edge['scope_id'])
 
     def activate_ability(self, ability: 'Ability', perm: 'Perm', scope: 'Scope' = None):
         ability.is_scope_supported(scope)
 
-        if perm.id not in [i.id for i in ability.get_supported_perms()]:
+        if not ability.is_perm_supported(perm):
             raise ValueError('Permission is not supported by this ability')
 
-        ability_perm = AbilityPerm.get_or_create(
-            entity_id=self.id,
-            ability_id=ability.id,
-            scope_id=scope.id if scope else None,
-            default={'perm_id': perm.id},
-        )
-        ability_perm.ability = ability
-        ability_perm.perm = perm
-        if scope:
-            ability_perm.scope = scope
+        graph.run(f'MATCH (e:{self.label}) WHERE id(e)={self.id} '
+                  f'MATCH (a:{ability.label}) WHERE id(a)={ability.id} '
+                  f'MERGE (e)-[r:{ENABLED} {{perm_id: {perm.id}}}]->(a)'
+                  f'SET r.scope_id = {cypher_repr(scope.id if scope else "*")}')
 
     def reset_ability(self, ability: 'Ability', scope: 'Scope' = None):
-        f = {'ability_id': ability.id, 'scope_id': scope.id if scope else None}
-        graph.run(f'MATCH (e:{self.label})-[:{ENABLED}]->(ap:{AbilityPerm.label} {encode_dict(f)}) '
-                  f'WHERE id(e) = {self.id} DETACH DELETE ap')
+        scope_id = cypher_repr(scope.id if scope else '*')
+        graph.run(f'MATCH (e:{self.label})-[r:{ENABLED}]->(a:{ability.label}) '
+                  f'WHERE id(e) = {self.id} AND id(a) = {ability.id} AND r.scope_id = {scope_id} '
+                  f'DELETE r')
 
     def reset_ability_in_all_scopes(self, ability: 'Ability'):
-        graph.run(f'MATCH (e:{self.label})-[:{ENABLED}]->(ap:{AbilityPerm.label})-[:{RELATED_TO}]->(a:{Ability.label}) '
+        graph.run(f'MATCH (e:{self.label})-[r:{ENABLED}]->(a:{ability.label}) '
                   f'WHERE id(e) = {self.id} AND id(a) = {ability.id} '
-                  f'DETACH DELETE ap')
+                  f'DELETE r')
 
     def reset_all_abilities(self):
-        graph.run(f'MATCH (e:{self.label})-[:{ENABLED}]->(ap:{AbilityPerm}) '
-                  f'WHERE id(e) = {self.id} DETACH DELETE ap')
+        graph.run(f'MATCH (e:{self.label})-[r:{ENABLED}]->(a:{Ability.label}) '
+                  f'WHERE id(e) = {self.id} DELETE r')
 
     def save(self, update_fields: List[str] = None):
         super().save(update_fields=update_fields)
@@ -256,11 +243,7 @@ class Entity(Model):
                 f'MATCH r = shortestPath((e)-[*1..16]->(p)) '
                 f'WITH type(relationships(r)[-1]) = "{ALLOW}" as k, p '
                 f'WHERE k RETURN id(p) as p')
-        try:
-            next(cursor)
-            return True
-        except StopIteration:
-            return False
+        return get_one(cursor) is not None
 
 
 class Group(_HasScope, Model):
@@ -285,19 +268,20 @@ class Group(_HasScope, Model):
                 raise RuntimeError(f'Can not make group {self} global: {global_group} exists')
             global_group.make_optional()
         self['__global__'] = True
-        self.save(update_fields=['__global__'])
         graph.run(
             f'MATCH (g:{self.label}) WHERE id(g) = {self.id} '
             f'MATCH (e:{Entity.label}) '
-            f'MERGE (e)-[:{IS_IN_AUTO}]->(g)')
+            f'MERGE (e)-[:{IS_IN_AUTO}]->(g) '
+            f'SET g.__global__ = true')
 
     def make_optional(self):
         if self.get('__global__') is not True:
             return
-        self['__global__'] = True
-        self.save(update_fields=['__global__'])
+        self.pop('__global__')
         graph.run(f'MATCH (:{Entity.label})-[r:{IS_IN_AUTO}]->(g:{self.label} '
-                  f'WHERE id(g) = {self.id} DELETE r')
+                  f'WHERE id(g) = {self.id} '
+                  f'SET g.__global__ = null '
+                  f'DELETE r')
 
     def get_linked_perms(self) -> (Iterable['Perm'], bool):
         cursor = graph.run(
@@ -328,24 +312,23 @@ class Group(_HasScope, Model):
 
     def get_allowed_perms(self, scope: 'Scope' = None) -> Iterable['Perm']:
         if scope:
-            cursor = graph.run(
-                f'MATCH (s:{Scope.label}) WHERE id(s) = {scope.id} '
-                f'MATCH (s)-[:{ALLOW}]->(p1:{Perm.label}) '
-                f'RETURN p1 as p '
-                f'UNION '
-                f'MATCH (s:{Scope.label}) WHERE id(s) = {scope.id} '
-                f'MATCH (g:{Group.label}) '
-                f'WHERE NOT (g)-[:{EXISTS_IN}|{SUBSET_OF}*]->(s) '  # g = Groups in wrong scope
-                f'MATCH (e:{self.label}) WHERE id(e) = {self.id} '  # e = current Entity
-                f'MATCH (p2:{Perm.label}) WHERE '  # p = Perms...
-                f'NOT (p2)<-[:{ALLOW}|{DENY}]-(g) '  # not in g...
-                f'AND (NOT (p2)-[:{EXISTS_IN}]->(:{Scope.label}) '
-                f' OR (p2)-[:{EXISTS_IN}|{SUBSET_OF}]->(s) '
-                f' OR (p2)-[:{EXISTS_IN}|{SUBSET_OF}]->(:{Scope.label})<-[:{SUBSET_OF}*]-(s:{Scope.label}) ) '  # and in right scope
-                f'MATCH r = shortestPath((e)-[*1..16]->(p2)) '
-                f'WITH type(relationships(r)[-1]) = "{ALLOW}" as k, p2 '
-                f'WHERE k '
-                f'RETURN p2 as p')
+            scope_ids = cypher_repr([i['i'] for i in graph.run(
+                f'MATCH (s:{Scope.label})-[:{SUBSET_OF}*]->(ss:{Scope.label}) '
+                f'WHERE id(s) = {scope.id} RETURN id(ss) as i'
+            )] + [scope.id, '*'])
+            cursor = graph.run(f"""
+                MATCH (s:{Scope.label}) WHERE id(s) IN {scope_ids}
+                CALL {{
+                    MATCH (e:{self.label}) WHERE id(e) = {self.id} RETURN e
+                    UNION
+                    WITH s RETURN s as e
+                }} 
+                MATCH r = shortestPath((e)-[*1..16]->(p:{Perm.label}))
+                WITH relationships(r) as r, tail(reverse(tail(reverse(nodes(r))))) as n, p
+                WHERE type(r[-1]) = "ALLOW"
+                    AND (r[-1].scope_id IN {scope_ids} OR NOT EXISTS(r[-1].scope_id))
+                    AND all(i IN n WHERE i.__scope_id__ IN {scope_ids} OR NOT EXISTS(i.__scope_id__))
+                RETURN p""")
         else:
             cursor = graph.run(
                 f'MATCH (e:{self.label}) WHERE id(e) = {self.id} '
@@ -357,24 +340,24 @@ class Group(_HasScope, Model):
 
     def is_able(self, perm: 'Perm', scope: 'Scope' = None) -> bool:
         if scope:
-            cursor = graph.run(
-                f'MATCH (s:{Scope.label}) WHERE id(s) = {scope.id} '
-                f'MATCH (s)-[:{ALLOW}]->(p1:{Perm.label}) '
-                f'RETURN id(p1) as p '
-                f'UNION '
-                f'MATCH (s:{Scope.label}) WHERE id(s) = {scope.id} '
-                f'MATCH (g:{Group.label}) '
-                f'WHERE NOT (g)-[:{EXISTS_IN}|{SUBSET_OF}*]->(s) '  # g = Groups in wrong scope
-                f'MATCH (e:{self.label}) WHERE id(e) = {self.id} '  # e = current Entity
-                f'MATCH (p2:{Perm.label}) WHERE '  # p = Perms...
-                f'NOT (p2)<-[:{ALLOW}|{DENY}]-(g) '  # not in g...
-                f'AND (NOT (p2)-[:{EXISTS_IN}]->(:{Scope.label}) '
-                f' OR (p2)-[:{EXISTS_IN}|{SUBSET_OF}]->(s) '
-                f' OR (p2)-[:{EXISTS_IN}|{SUBSET_OF}]->(:{Scope.label})<-[:{SUBSET_OF}*]-(s:{Scope.label}) ) '  # and in right scope
-                f'MATCH r = shortestPath((e)-[*1..16]->(p2)) '
-                f'WITH type(relationships(r)[-1]) = "{ALLOW}" as k, p2 '
-                f'WHERE k '
-                f'RETURN id(p2) as p')
+            scope_ids = cypher_repr([i['i'] for i in graph.run(
+                f'MATCH (s:{Scope.label})-[:{SUBSET_OF}*]->(ss:{Scope.label}) '
+                f'WHERE id(s) = {scope.id} RETURN id(ss) as i'
+            )] + [scope.id, '*'])
+            cursor = graph.run(f"""
+                MATCH (s:{Scope.label}) WHERE id(s) IN {scope_ids}
+                CALL {{
+                    MATCH (e:{self.label}) WHERE id(e) = {self.id} RETURN e
+                    UNION
+                    WITH s RETURN s as e
+                }} 
+                MATCH (p:{Perm.label}) WHERE id(p) = {perm.id}
+                MATCH r = shortestPath((e)-[*1..16]->(p))
+                WITH relationships(r) as r, tail(reverse(tail(reverse(nodes(r))))) as n, p
+                WHERE type(r[-1]) = "ALLOW"
+                    AND (r[-1].scope_id IN {scope_ids} OR NOT EXISTS(r[-1].scope_id))
+                    AND all(i IN n WHERE i.__scope_id__ IN {scope_ids} OR NOT EXISTS(i.__scope_id__))
+                RETURN id(p) as p""")
         else:
             cursor = graph.run(
                 f'MATCH (e:{self.label}) WHERE id(e) = {self.id} '
@@ -382,11 +365,7 @@ class Group(_HasScope, Model):
                 f'MATCH r = shortestPath((e)-[*1..16]->(p)) '
                 f'WITH type(relationships(r)[-1]) = "{ALLOW}" as k, p '
                 f'WHERE k RETURN id(p) as p')
-        try:
-            next(cursor)
-            return True
-        except StopIteration:
-            return False
+        return get_one(cursor) is not None
 
 
 class Perm(_HasScope, Model):
@@ -427,6 +406,11 @@ class Ability(_HasScope, Model):
         for record in cursor:
             return Ability.from_node(record['a'])
 
+    def is_perm_supported(self, perm: 'Perm') -> bool:
+        cursor = graph.run(f'MATCH (a:{self.label})-[:{SUPPORTS}]->(p:{Perm.label}) '
+                           f'WHERE id(a) = {self.id} AND id(p) = {perm.id} RETURN id(p) as i')
+        return get_one(cursor) is not None
+
     def get_supported_perms(self) -> Iterable['Perm']:
         cursor = graph.run(f'MATCH (a:{self.label}) -[:{SUPPORTS}]-> (p:{Perm.label}) '
                            f'WHERE id(a) = {self.id} RETURN p')
@@ -450,7 +434,4 @@ class Ability(_HasScope, Model):
                   f'DELETE r')
 
 
-class AbilityPerm(Model):
-    scope = ForeignKey('Scope', WORKS_IN)
-    ability = ForeignKey('Ability', RELATED_TO)
-    perm = ForeignKey('Perm', ACTIVATED)
+EnabledAbility = namedtuple('EnabledAbility', 'ability perm_id scope_id')

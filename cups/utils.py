@@ -46,6 +46,8 @@ def get_one(cursor) -> Optional[Record]:
         return next(cursor)
     except StopIteration:
         pass
+    finally:
+        cursor.close()
 
 
 class _ModelType(type):
@@ -122,7 +124,12 @@ class Model(dict, metaclass=_ModelType):
 
     @classmethod
     def from_node(cls, node: Node) -> 'NodeType':
-        return cls(node.identity, **node)
+        if cls == Model:
+            for label in node.labels:
+                if model := Model.get_model(label):
+                    return model(node.identity, **node)
+        else:
+            return cls(node.identity, **node)
 
     def as_node(self):
         node = Node(self.label, **self)
@@ -160,6 +167,9 @@ class Model(dict, metaclass=_ModelType):
     @classmethod
     def get_model(cls, model_name: str):
         return cls.__registry__.get(model_name)
+
+    def __hash__(self):
+        return hash(f'{self.label}:{self.id}')
 
     def __str__(self) -> str:
         return f'[{self.label} {self.id}] {cypher_repr(self)}'

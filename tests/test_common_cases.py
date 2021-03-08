@@ -1,4 +1,4 @@
-from cups.models import Ability, Entity, Group, Perm, Scope
+from cups.models import Ability, EnabledAbility, Entity, Group, Perm, Scope
 
 
 class User(Entity):
@@ -68,29 +68,31 @@ def test_complicated_perms_links(clear_db):
 
     assert select.id == Perm.get_one(name='select').id
 
-    assert {i.id for i in guest.get_allowed_perms()} == {select.id, fly1.id}
-    assert {i.id for i in dude.get_allowed_perms()} == {select.id, create.id, fly2.id}
-    assert {i.id for i in shadow.get_allowed_perms()} == {select.id, update.id}
-    assert {i.id for i in ivan.get_allowed_perms()} == {select.id, update.id, create.id, fly2.id}
-    assert {i.id for i in adam.get_allowed_perms()} == {select.id, create.id, delete.id, fly1.id}
+    assert Group.get_global().id == users.id
 
-    assert {i.id for i in guest.get_allowed_perms(scope=server)} == {select.id, fly1.id}
-    assert {i.id for i in dude.get_allowed_perms(scope=server)} == {select.id, create.id, fly2.id}
-    assert {i.id for i in shadow.get_allowed_perms(scope=server)} == {select.id, update.id}
-    assert {i.id for i in ivan.get_allowed_perms(scope=server)} == {select.id, update.id, create.id, fly2.id}
-    assert {i.id for i in adam.get_allowed_perms(scope=server)} == {select.id, create.id, delete.id, fly1.id}
+    assert set(guest.get_allowed_perms()) == {select, fly1}
+    assert set(dude.get_allowed_perms()) == {select, create, fly2}
+    assert set(shadow.get_allowed_perms()) == {select, update}
+    assert set(ivan.get_allowed_perms()) == {select, update, create, fly2}
+    assert set(adam.get_allowed_perms()) == {select, create, delete, fly1}
 
-    assert {i.id for i in guest.get_allowed_perms(scope=modpack)} == {select.id}
-    assert {i.id for i in dude.get_allowed_perms(scope=modpack)} == {select.id, fly2.id}
-    assert {i.id for i in shadow.get_allowed_perms(scope=modpack)} == {select.id, update.id}
-    assert {i.id for i in ivan.get_allowed_perms(scope=modpack)} == {select.id, update.id, create.id}
-    assert {i.id for i in adam.get_allowed_perms(scope=modpack)} == {select.id, create.id, delete.id}
+    assert set(guest.get_allowed_perms(scope=server)) == {select, fly1}
+    assert set(dude.get_allowed_perms(scope=server)) == {select, create, fly2}
+    assert set(shadow.get_allowed_perms(scope=server)) == {select, update}
+    assert set(ivan.get_allowed_perms(scope=server)) == {select, update, create, fly2}
+    assert set(adam.get_allowed_perms(scope=server)) == {select, create, delete, fly1}
 
-    assert {i.id for i in guest.get_allowed_perms(scope=off_scope)} == {select.id}
-    assert {i.id for i in dude.get_allowed_perms(scope=off_scope)} == {select.id}
-    assert {i.id for i in shadow.get_allowed_perms(scope=off_scope)} == {select.id, update.id}
-    assert {i.id for i in ivan.get_allowed_perms(scope=off_scope)} == {select.id, update.id, create.id}
-    assert {i.id for i in adam.get_allowed_perms(scope=off_scope)} == {select.id, create.id, delete.id}
+    assert set(guest.get_allowed_perms(scope=modpack)) == {select}
+    assert set(dude.get_allowed_perms(scope=modpack)) == {select, fly2}
+    assert set(shadow.get_allowed_perms(scope=modpack)) == {select, update}
+    assert set(ivan.get_allowed_perms(scope=modpack)) == {select, update, create}
+    assert set(adam.get_allowed_perms(scope=modpack)) == {select, create, delete}
+
+    assert set(guest.get_allowed_perms(scope=off_scope)) == {select}
+    assert set(dude.get_allowed_perms(scope=off_scope)) == {select}
+    assert set(shadow.get_allowed_perms(scope=off_scope)) == {select, update}
+    assert set(ivan.get_allowed_perms(scope=off_scope)) == {select, update, create}
+    assert set(adam.get_allowed_perms(scope=off_scope)) == {select, create, delete}
 
     assert adam.is_able(select)
     assert adam.is_able(select, server)
@@ -103,3 +105,5 @@ def test_complicated_perms_links(clear_db):
     assert not adam.is_able(fly2)
     assert not adam.is_able(fly2, server)
     assert not adam.is_able(fly2, modpack)
+
+    assert set(adam.get_activated_abilities(server)) == {EnabledAbility(fly, fly1.id, server.id)}
