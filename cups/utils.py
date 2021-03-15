@@ -108,13 +108,17 @@ class Model(dict, metaclass=_ModelType):
             return cls.from_node(record['i'])
 
     @classmethod
-    def get_or_create(cls, default: dict = None, **kwargs) -> Optional['NodeType']:
-        """Attempt to find one by kwargs, otherwise create with kwargs and default"""
+    def get_or_create(cls, default: dict = None, **kwargs) -> ('NodeType', bool):
+        """
+        :param default: - initial params for newly created Nodes
+        :param kwargs: - search params, also used in Node creation. may be overwritten by default
+        :return: tuple[Node, created]
+        """
         record = get_one(graph.run(f'MATCH (i:{cls.label} {encode_dict(kwargs)}) RETURN i'))
         if record:
-            return cls.from_node(record['i'])
+            return cls.from_node(record['i']), False
         else:
-            return cls.create(**{**kwargs, **(default or {})})
+            return cls.create(**{**kwargs, **(default or {})}), True
 
     @classmethod
     def get_all(cls, id: int = None, /, **kwargs) -> Iterable['NodeType']:
