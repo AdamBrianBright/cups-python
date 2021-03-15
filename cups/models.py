@@ -81,19 +81,12 @@ class _HasScope(Model):
 
 class Entity(Model):
     def get_groups(self, scope: 'Scope' = None) -> Iterable['Group']:
-        if scope:
-            cursor = graph.run(
-                f'MATCH (s:{Scope.label}) WHERE id(s) = {scope.id} '
-                f'MATCH (e:{self.label}) -[:{IS_IN}]-> (g:{Group.label}) -[:{EXISTS_IN}|{SUBSET_OF}*]-> (s) '
-                f'WHERE NOT (e)-[:{IS_IN_AUTO}]-> (g:{Group.label}) AND id(e) = {self.id} '
-                f'RETURN g'
-            )
-        else:
-            cursor = graph.run(
-                f'MATCH (e:{self.label}) -[:{IS_IN}]-> (g:{Group.label}) '
-                f'WHERE NOT (e)-[:{IS_IN_AUTO}]-> (g:{Group.label}) AND id(e) = {self.id} '
-                f'RETURN g'
-            )
+        f = {'scope_id': scope.id if scope else '*'}
+        cursor = graph.run(
+            f'MATCH (e:{self.label}) -[:{IS_IN} {encode_dict(f)}]-> (g:{Group.label}) '
+            f'WHERE NOT (e)-[:{IS_IN_AUTO}]-> (g:{Group.label}) AND id(e) = {self.id} '
+            f'RETURN g'
+        )
         for record in cursor:
             yield Group.from_node(record['g'])
         yield Group.get_global()
@@ -104,7 +97,7 @@ class Entity(Model):
         f = {'scope_id': scope.id if scope else '*'}
         graph.run(f'MATCH (e:{self.label}) WHERE id(e) = {self.id} '
                   f'MATCH (g:{Group.label}) WHERE id(g) = {group.id} '
-                  f'MERGE (e)-[r:{IS_IN} {f}]->(g) '
+                  f'MERGE (e)-[r:{IS_IN} {encode_dict(f)}]->(g) '
                   f'{set_expire("r", expire_at)}')
 
     def remove_from_group(self, group: 'Group', scope: 'Scope' = None):

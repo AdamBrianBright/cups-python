@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta
 
+from pytest import raises
+
 from cups.models import Ability, EnabledAbility, Entity, Group, Perm, Scope
 from cups.tasks import delete_expired_edges, delete_expired_nodes
 
@@ -51,7 +53,9 @@ def test_complicated_perms_links(clear_db):
     adam.add_to_group(admins)
     ivan.add_to_group(moderators)
     shadow.add_to_group(editors)
-    dude.add_to_group(contributors)
+    with raises(ValueError):
+        dude.add_to_group(contributors)
+    dude.add_to_group(contributors, scope=server)
 
     adam.link_perm(update, allow=False)
 
