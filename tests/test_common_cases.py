@@ -1,4 +1,7 @@
+from datetime import datetime, timedelta
+
 from cups.models import Ability, EnabledAbility, Entity, Group, Perm, Scope
+from cups.tasks import delete_expired_edges, delete_expired_nodes
 
 
 class User(Entity):
@@ -107,3 +110,19 @@ def test_complicated_perms_links(clear_db):
     assert not adam.is_able(fly2, modpack)
 
     assert set(adam.get_activated_abilities(server)) == {EnabledAbility(fly, fly1.id, server.id)}
+
+
+def test_delete_expired_nodes(clear_db):
+    i = User.create(name='Adam', expire_at=123321)
+    assert User.get_one(name='Adam').id == i.id
+    delete_expired_nodes()
+    assert User.get_one(name='Adam') is None
+
+
+def test_delete_expired_edges(clear_db):
+    i = User.create(name='Adam')
+    g = Group.create(name='Users')
+    i.add_to_group(g, expire_at=datetime.now() - timedelta(days=2))
+    assert len(list(i.get_groups())) == 2
+    delete_expired_edges()
+    assert len(list(i.get_groups())) == 1

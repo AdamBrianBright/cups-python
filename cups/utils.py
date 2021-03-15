@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Iterable, List, Optional, TypeVar
 
 from py2neo import Node, Record
@@ -8,6 +9,8 @@ from cups.db import graph
 __all__ = [
     'encode_dict',
     'encode_filter',
+    'expire',
+    'set_expire',
     'get_one',
     'ForeignKey',
     'Model',
@@ -39,6 +42,14 @@ def encode_filter(id: int = None, /, **kwargs) -> str:
             except ValueError:
                 raise ValueError('Invalid property data')
     return ' AND '.join(f)
+
+
+def expire(dt: datetime = None) -> str:
+    return cypher_repr({'expire_at': dt.timestamp()}) if dt else ''
+
+
+def set_expire(i: str, dt: datetime = None) -> str:
+    return f'SET {i}.expire_at = {cypher_repr(dt.timestamp())} ' if dt else ' '
 
 
 def get_one(cursor) -> Optional[Record]:
@@ -108,7 +119,7 @@ class Model(dict, metaclass=_ModelType):
             return cls.from_node(record['i'])
 
     @classmethod
-    def get_or_create(cls, default: dict = None, **kwargs) -> ('NodeType', bool):
+    def get_or_create(cls, default: dict = None, expire_at: datetime = None, **kwargs) -> ('NodeType', bool):
         """
         :param default: - initial params for newly created Nodes
         :param kwargs: - search params, also used in Node creation. may be overwritten by default
@@ -171,6 +182,12 @@ class Model(dict, metaclass=_ModelType):
     @classmethod
     def get_model(cls, model_name: str):
         return cls.__registry__.get(model_name)
+
+    def as_dict(self, update: dict = None):
+        d = {**self, 'id': self.id}
+        if update:
+            d.update(update)
+        return d
 
     def __hash__(self):
         return hash(f'{self.label}:{self.id}')

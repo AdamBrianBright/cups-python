@@ -1,4 +1,5 @@
 from collections import namedtuple
+from datetime import datetime
 from typing import Iterable, List, Optional
 
 from py2neo import cypher_repr
@@ -13,6 +14,18 @@ __all__ = [
     'Scope',
     'Ability',
     'EnabledAbility',
+    'IS_IN',
+    'IS_IN_AUTO',
+    'ALLOW',
+    'DENY',
+    'INHERITS',
+    'EXISTS_IN',
+    'SUBSET_OF',
+    'SUPPORTS',
+    'ACTIVATED',
+    'ENABLED',
+    'RELATED_TO',
+    'WORKS_IN',
 ]
 
 IS_IN = 'IS_IN'
@@ -85,10 +98,10 @@ class Entity(Model):
             yield Group.from_node(record['g'])
         yield Group.get_global()
 
-    def add_to_group(self, group: 'Group'):
+    def add_to_group(self, group: 'Group', expire_at: datetime = None):
         graph.run(f'MATCH (e:{self.label}) WHERE id(e) = {self.id} '
                   f'MATCH (g:{Group.label}) WHERE id(g) = {group.id} '
-                  f'MERGE (e)-[:{IS_IN}]->(g)')
+                  f'MERGE (e)-[:{IS_IN} {expire(expire_at)}]->(g)')
 
     def remove_from_group(self, group: 'Group'):
         graph.run(f'MATCH (e:{self.label})-[r:{IS_IN}]->(g:{Group.label}) '
@@ -117,7 +130,7 @@ class Entity(Model):
             edge = record['r']
             yield EnabledAbility(ability=ability, perm_id=edge['perm_id'], scope_id=edge['scope_id'])
 
-    def activate_ability(self, ability: 'Ability', perm: 'Perm', scope: 'Scope' = None):
+    def activate_ability(self, ability: 'Ability', perm: 'Perm', scope: 'Scope' = None, expire_at: datetime = None):
         ability.is_scope_supported(scope)
 
         if not ability.is_perm_supported(perm):
@@ -125,7 +138,8 @@ class Entity(Model):
 
         graph.run(f'MATCH (e:{self.label}) WHERE id(e)={self.id} '
                   f'MATCH (a:{ability.label}) WHERE id(a)={ability.id} '
-                  f'MERGE (e)-[r:{ENABLED} {{perm_id: {perm.id}}}]->(a)'
+                  f'MERGE (e)-[r:{ENABLED} {{perm_id: {perm.id}}}]->(a) '
+                  f'{set_expire("r", expire_at)}'
                   f'SET r.scope_id = {cypher_repr(scope.id if scope else "*")}')
 
     def reset_ability(self, ability: 'Ability', scope: 'Scope' = None):
@@ -166,13 +180,14 @@ class Entity(Model):
         for record in cursor:
             yield Perm.from_node(record['p']), record['r'] == ALLOW
 
-    def link_perm(self, perm: 'Perm', /, scope: 'Scope' = None, allow: bool = True):
+    def link_perm(self, perm: 'Perm', /, scope: 'Scope' = None, allow: bool = True, expire_at: datetime = None):
         perm.is_scope_supported(scope)
         self.reset_perm(perm, scope=scope)
         f = {'scope_id': scope.id if scope else '*'}
         graph.run(f'MATCH (e:{self.label}) WHERE id(e) = {self.id} '
                   f'MATCH (p:{Perm.label}) WHERE id(p) = {perm.id} '
-                  f'MERGE (e)-[:{ALLOW if allow else DENY} {encode_dict(f)}]->(p)')
+                  f'MERGE (e)-[r:{ALLOW if allow else DENY} {encode_dict(f)}]->(p) '
+                  f'{set_expire("r", expire_at)}')
 
     def reset_perm(self, perm: 'Perm', scope: 'Scope' = None):
         f = {'scope_id': scope.id if scope else '*'}
@@ -290,17 +305,19 @@ class Group(_HasScope, Model):
         for record in cursor:
             yield Perm.from_node(record['p']), record['r'] == ALLOW
 
-    def link_perm(self, perm: 'Perm', /, allow: bool = True):
+    def link_perm(self, perm: 'Perm', /, allow: bool = True, expire_at: datetime = None):
         self.reset_perm(perm)
         graph.run(f'MATCH (e:{self.label}) WHERE id(e) = {self.id} '
                   f'MATCH (p:{Perm.label}) WHERE id(p) = {perm.id} '
-                  f'MERGE (e)-[:{ALLOW if allow else DENY}]->(p)')
+                  f'MERGE (e)-[r:{ALLOW if allow else DENY}]->(p) '
+                  f'{set_expire("r", expire_at)}')
 
-    def link_all_perms(self, /, allow: bool = True):
+    def link_all_perms(self, /, allow: bool = True, expire_at: datetime = None):
         self.reset_all_perms()
         graph.run(f'MATCH (e:{self.label}) WHERE id(e) = {self.id} '
                   f'MATCH (p:{Perm.label}) '
-                  f'MERGE (e)-[:{ALLOW if allow else DENY}]->(p)')
+                  f'MERGE (e)-[r:{ALLOW if allow else DENY}]->(p) '
+                  f'{set_expire("r", expire_at)}')
 
     def reset_perm(self, perm: 'Perm'):
         graph.run(f'MATCH (e:{self.label})-[r:{ALLOW}|{DENY}]->(p:{Perm.label}) '
@@ -382,11 +399,12 @@ class Scope(Model):
         for record in cursor:
             yield Perm.from_node(record['p']), record['r'] == ALLOW
 
-    def link_perm(self, perm: 'Perm'):
+    def link_perm(self, perm: 'Perm', expire_at: datetime = None):
         self.reset_perm(perm)
         graph.run(f'MATCH (s:{self.label}) WHERE id(s) = {self.id} '
                   f'MATCH (p:{Perm.label}) WHERE id(p) = {perm.id} '
-                  f'MERGE (s)-[:{ALLOW}]->(p)')
+                  f'MERGE (s)-[r:{ALLOW}]->(p) '
+                  f'{set_expire("r", expire_at)}')
 
     def reset_perm(self, perm: 'Perm'):
         graph.run(f'MATCH (s:{self.label})-[r:{ALLOW}]->(p:{Perm.label}) '
@@ -417,10 +435,11 @@ class Ability(_HasScope, Model):
         for record in cursor:
             yield Perm.from_node(record['p'])
 
-    def add_perm_support(self, perm: 'Perm'):
+    def add_perm_support(self, perm: 'Perm', expire_at: datetime = None):
         graph.run(f'MATCH (a:{self.label}) WHERE id(a) = {self.id} '
                   f'MATCH (p:{Perm.label}) WHERE id(p) = {perm.id} '
-                  f'MERGE (a)-[:{SUPPORTS}]->(p)')
+                  f'MERGE (a)-[r:{SUPPORTS}]->(p) '
+                  f'{set_expire("r", expire_at)}')
 
     def remove_perm_support(self, perm: 'Perm'):
         graph.run(f'MATCH (a:{self.label}) WHERE id(a) = {self.id} '
