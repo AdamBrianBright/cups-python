@@ -98,14 +98,24 @@ class Entity(Model):
             yield Group.from_node(record['g'])
         yield Group.get_global()
 
-    def add_to_group(self, group: 'Group', expire_at: datetime = None):
+    def add_to_group(self, group: 'Group', scope: 'Scope' = None, expire_at: datetime = None):
+        group.is_scope_supported(scope)
+
+        f = {'scope_id': scope.id if scope else '*'}
         graph.run(f'MATCH (e:{self.label}) WHERE id(e) = {self.id} '
                   f'MATCH (g:{Group.label}) WHERE id(g) = {group.id} '
-                  f'MERGE (e)-[:{IS_IN} {expire(expire_at)}]->(g)')
+                  f'MERGE (e)-[r:{IS_IN} {f}]->(g) '
+                  f'{set_expire("r", expire_at)}')
 
-    def remove_from_group(self, group: 'Group'):
-        graph.run(f'MATCH (e:{self.label})-[r:{IS_IN}]->(g:{Group.label}) '
+    def remove_from_group(self, group: 'Group', scope: 'Scope' = None):
+        f = {'scope_id': scope.id if scope else '*'}
+        graph.run(f'MATCH (e:{self.label})-[r:{IS_IN} {encode_dict(f)}]->(g:{Group.label}) '
                   f'WHERE id(e) = {self.id} and id(g) = {group.id} DELETE r')
+
+    def remove_from_all_groups_in_scope(self, scope: 'Scope' = None):
+        f = {'scope_id': scope.id if scope else '*'}
+        graph.run(f'MATCH (e:{self.label})-[r:{IS_IN} {encode_dict(f)}]->(g:{Group.label}) '
+                  f'WHERE id(e) = {self.id} DELETE r')
 
     def remove_from_all_groups(self):
         graph.run(f'MATCH (e:{self.label})-[r:{IS_IN}]->(g:{Group.label}) '

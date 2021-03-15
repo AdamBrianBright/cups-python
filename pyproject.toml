@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "cups-python"
-version = "0.1.2"
+version = "0.1.3"
 description = "Cifrazia Ultimate Permission System | Python"
 authors = ["Bogdan Parfenov <adam.brian.bright@gmail.com>"]
 license = "MIT"
